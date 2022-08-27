@@ -1,0 +1,219 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(edgeR)
+library(limma)
+```
+
+
+```{r}
+methylated <- read.table("dati/coad_methylated_genes.txt", header=FALSE)
+methylated <- methylated$V1
+head(methylated)
+```
+
+
+```{r}
+keepMethylated <- function(dataset){
+  indexes <- which(row.names(dataset) %in% methylated)
+  new_dataset <- dataset[indexes,]
+  return(new_dataset)
+}
+```
+
+
+```{r}
+clinical <- read.table("dati/coad_clinical.txt", header=TRUE, sep = "\t", row.names=1)
+```
+
+
+```{r}
+groups <- factor(clinical$shortLetterCode)
+levels(groups)
+```
+
+
+```{r}
+design.matrix <- model.matrix(~ 0+groups)
+colnames(design.matrix) <- c(levels(groups))
+head(design.matrix)
+```
+
+
+```{r}
+cont.matrix <- makeContrasts(CasevsControl = TP-NT,
+            levels=design.matrix)
+
+cont.matrix
+```
+
+
+```{r}
+plotVolcano <- function(p_value=0.05, column = 1, title="Volcano Plot", dataset = fit2, xlim=c(-4e+03,4e+03)) {
+  significance.res <- decideTests(dataset,adjust.method = "BH", p.value = p_value)
+  colors <- rep("grey",nrow(significance.res))
+  colors[which(significance.res[,column]==-1)] <- "blue"
+  colors[which(significance.res[,column]==1)] <- "red"
+  volcanoplot(fit2,coef=column,col=colors, xlim= xlim)
+  title(main = title)
+}
+```
+
+
+
+```{r}
+##Prima li filtro preservando solamente i geni con un cpm>100 in almeno due colonne
+##Poi eseguo limma e, in seguito, prendo da essi soltanto i metilati
+expression <- read.table("dati/coad_expression_fixed.txt", header=TRUE, sep = "\t", row.names=1)
+
+#filtro conservando i geni con cpm>100 in almeno 2 colonne
+keep <- rowSums(cpm(expression)>100) >= 2
+expression <- expression[keep,]
+
+fit <- lmFit(expression, design.matrix)
+fit2 <- contrasts.fit(fit, cont.matrix)
+fit2 <- eBayes(fit2)
+
+cpmFilterAfter <-decideTests(fit2,adjust.method = "BH", p.value = 0.05)
+# print("PRIMA DI PRENDERE I METILATI")
+# summary(cpmFilterAfter)
+length(cpmFilterAfter) #dimensione
+print("ORA PRENDO I METILATI")
+cpmFilterAfter <- keepMethylated(cpmFilterAfter) # li filtro qui, dopo aver applicato limma
+summary(cpmFilterAfter)
+length(cpmFilterAfter) #dimensione
+
+
+#faccio il plot
+plotVolcano(column = 1, title="Tumore vs Controllo\nfiltri:CPM prima, metilati dopo (p-value:0.05)\n", xlim=c(-4e+03,4e+03))
+
+sum(abs(cpmFilterAfter[,1]))
+```
+
+```{r}
+topTable(fit2, number=20)
+```
+
+
+```{r}
+#Methylated Differently Expressed Genes
+MDEG <- row.names(cpmFilterAfter[which(cpmFilterAfter[,1] != 0),])
+```
+
+
+```{r}
+write.table(MDEG, file = "dati/coad_methylated_differently_expressed_genes.txt", sep = "\n",col.names = FALSE, quote = FALSE, row.names = FALSE)
+```
+
+```{r}
+expressionMDEG <- expression[which(row.names(expression) %in% MDEG),]
+dim(expressionMDEG)
+```
+```{r}
+NT_indexes <- which(clinical$shortLetterCode == "NT")
+```
+
+```{r}
+NT_expr <- expressionMDEG[,NT_indexes]
+TP_expr <- expressionMDEG[,-NT_indexes]
+```
+
+
+```{r}
+#calcolo la media, per ogni gene, delle espressioni del gruppo di controllo
+NT_mean <- apply(NT_expr, 1, FUN = mean)
+#dalla media calcolo il logartimo in base 2 della media
+NT_log2Mean <- log2(NT_mean)
+#calcolo il logaritmo delle espressioni dei campioni tumorali
+TP_log2 <- log2(TP_expr)
+#ottengo il LogFoldChange per ogni gene-campione tumorale
+TP_LFC <- TP_log2 - NT_log2Mean
+```
+
+
+```{r}
+head(TP_log2)
+head(NT_log2Mean)
+head(TP_LFC)
+```
+
+```{r}
+decideExpression <- function(x, epsilon = 0.001){
+  if(x>epsilon)
+    return("OVEREXPRESSION")
+  else if(x < -epsilon)
+    return("UNDEREXPRESSION")
+  else #quindi -epsilon <= x <= epsilon
+    return("NORMAL")
+}
+```
+
+
+```{r}
+TP_decide <- data.frame(apply(TP_LFC, c(1, 2), FUN = decideExpression))
+```
+
+
+
+```{r}
+head(TP_decide)
+head(TP_LFC)
+
+```
+
+```{r}
+head(which(TP_decide[,1] == "NORMAL"))
+```
+```{r}
+which(TP_decide$TCGA.F4.6805.01A.11R.1839.07 == "NORMAL")
+arr <- TP_decide$TCGA.F4.6805.01A.11R.1839.07
+which(arr == "NORMAL")
+```
+
+```{r}
+lapply(colnames(TP_decide),function(x, data){length(which(data[,x]=="NORMAL"))}, TP_decide)
+```
+
+```{r}
+createExpressionFile <- function(col_name){
+  write.table(MDEG, file = "dati/coad_methylated_differently_expressed_genes.txt", sep = "\n",col.names = FALSE, quote = FALSE, row.names = FALSE)
+}
+
+createNonExpressionFile <- function(col_name){
+  write.table(MDEG, file = "dati/coad_methylated_differently_expressed_genes.txt", sep = "\n",col.names = FALSE, quote = FALSE, row.names = FALSE)
+}
+```
+
+
+```{r}
+newSimulation <- function(col_name, ds){
+  column <- ds[,col_name]
+  # print(column)
+  normal_indexes <- which(column == "NORMAL")
+  nonExpressed <- row.names(ds)[normal_indexes]
+  expressed <- row.names(ds)[-normal_indexes]
+  createExpressionFile(col_name)
+  createNonExpressionFile(col_name)
+}
+
+# newSimulation(TP_decide, colnames(TP_decide))
+sapply(colnames(TP_decide),newSimulation, TP_decide)
+```
+
+
+
+```{r}
+head(TP_expr)
+head(TP_log2)
+```
+
+
+```{r}
+head(NT_expr)
+head(TP_expr)
+head(NT_mean)
+```
+
