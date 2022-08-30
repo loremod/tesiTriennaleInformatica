@@ -64,6 +64,71 @@ plotVolcano <- function(p_value=0.05, column = 1, title="Volcano Plot", dataset 
 
 
 
+
+```{r}
+entrezTable <- read.table("dati/coad_expression_with_ids_fixed.txt", header=TRUE, sep = "\t", row.names=1)
+```
+
+
+```{r}
+dim(entrezTable)
+```
+
+
+```{r}
+getSYMBOL <- function(x){
+  strsplit(x,split="|",fixed=TRUE)[[1]][1]
+  # v <- strsplit(x,split="|",fixed=TRUE)
+  # return(v[1])
+}
+getID <- function(x){
+  strsplit(x,split="|",fixed=TRUE)[[1]][2]
+  # v <- strsplit(x,split="|",fixed=TRUE)
+  # return(v[1])
+}
+
+splitLength <- function(x){
+  length(strsplit(x,split="|",fixed=TRUE)[[1]])
+}
+```
+
+```{r}
+codes <- row.names(entrezTable)
+head(sapply(codes, getSYMBOL))
+```
+```{r}
+head(row.names(entrezTable))
+```
+
+```{r}
+entrezTable
+```
+
+
+```{r}
+entrezMap <- data.frame(row.names = sapply(codes, getSYMBOL),EntrezID=sapply(codes, getID))
+# entrezMap <- data.frame(row.names = sapply(codes, getID), symbol=sapply(codes, getSYMBOL))
+```
+
+```{r}
+methylated[3:5]
+```
+
+```{r}
+# #ELIMINIAMO I SYMBOL DUPLICATI
+# interrogativo_indici <- which(entrezMap$SYMBOL=='?')
+# geni_duplicati <- which(entrezMap$SYMBOL=='SLC35E2')
+# to_remove = c(interrogativo_indici, geni_duplicati)
+# # entrezMap[to_remove,]
+# entrezMap2 <- entrezMap[-to_remove, ]
+# entrezMap2
+# ```
+# ```{r}
+# n_occur <- data.frame(table(entrezMap2$EntrezID))
+# n_occur[n_occur$Freq > 1,]
+```
+
+
 ```{r}
 ##Prima li filtro preservando solamente i geni con un cpm>100 in almeno due colonne
 ##Poi eseguo limma e, in seguito, prendo da essi soltanto i metilati
@@ -103,18 +168,31 @@ topTable(fit2, number=20)
 MDEG <- row.names(cpmFilterAfter[which(cpmFilterAfter[,1] != 0),])
 ```
 
+```{r}
+MDEG_entrez <- data.frame(row.names=MDEG,entrez=entrezMap[MDEG,])
+```
+
 
 ```{r}
-write.table(MDEG, file = "dati/coad_methylated_differently_expressed_genes.txt", sep = "\n",col.names = FALSE, quote = FALSE, row.names = FALSE)
+write.table(MDEG_entrez, file = "dati/coad_methylated_differently_expressed_genes.txt", sep = "\t",col.names = FALSE, quote = FALSE, row.names = TRUE)
 ```
+
+```{r}
+MDEG_entrez
+```
+
+
 
 ```{r}
 expressionMDEG <- expression[which(row.names(expression) %in% MDEG),]
 dim(expressionMDEG)
 ```
+
+
 ```{r}
 NT_indexes <- which(clinical$shortLetterCode == "NT")
 ```
+
 
 ```{r}
 NT_expr <- expressionMDEG[,NT_indexes]
@@ -168,41 +246,153 @@ head(TP_LFC)
 head(which(TP_decide[,1] == "NORMAL"))
 ```
 ```{r}
+row.names(TP_decide) <- entrezMap[row.names(TP_decide),]
+```
+
+```{r}
+head(TP_decide)
+```
+
+
+
+```{r}
 which(TP_decide$TCGA.F4.6805.01A.11R.1839.07 == "NORMAL")
 arr <- TP_decide$TCGA.F4.6805.01A.11R.1839.07
 which(arr == "NORMAL")
 ```
 
+
+
+
 ```{r}
-lapply(colnames(TP_decide),function(x, data){length(which(data[,x]=="NORMAL"))}, TP_decide)
+# mapped <- mapIds(org.Hs.eg.db, keys = MDEG, column = "ENTREZID", keytype = "SYMBOL")
+# mapped[c("A2M","DDX6","CD34","CD97","ciccio")]
+# mapToEntrez <- function(keys){
+#   genes_found <- list()
+#   if(length(keys)==0)
+#     return(genes_found)
+#   for (x in keys) {
+#     if(!is.na(mapped[x])){
+#       genes_found <- append(genes_found,mapped[x])
+#     }
+#   }
+#   genes_found
+# }
 ```
 
 ```{r}
-createExpressionFile <- function(col_name){
-  write.table(MDEG, file = "dati/coad_methylated_differently_expressed_genes.txt", sep = "\n",col.names = FALSE, quote = FALSE, row.names = FALSE)
-}
+library(httr)
+```
 
-createNonExpressionFile <- function(col_name){
-  write.table(MDEG, file = "dati/coad_methylated_differently_expressed_genes.txt", sep = "\n",col.names = FALSE, quote = FALSE, row.names = FALSE)
-}
+```{r}
+as.list(list("ciao","miao","gatti"))
 ```
 
 
 ```{r}
 newSimulation <- function(col_name, ds){
+
+  #suddivide i geni per espressione e li mappa con gli EntrezID
   column <- ds[,col_name]
-  # print(column)
+
   normal_indexes <- which(column == "NORMAL")
-  nonExpressed <- row.names(ds)[normal_indexes]
-  expressed <- row.names(ds)[-normal_indexes]
-  createExpressionFile(col_name)
-  createNonExpressionFile(col_name)
+  over_indexes <- which(column == "OVEREXPRESSION")
+  under_indexes <- which(column == "UNDEREXPRESSION")
+  
+  nonExpressed <- as.list(row.names(ds)[normal_indexes])
+  overExpressed <- as.list(row.names(ds)[over_indexes])
+  underExpressed <- as.list(row.names(ds)[under_indexes])
+  
+  nodes <- list()
+  if(length(nonExpressed)>0){
+    nodes <- list(nonExpressed=nonExpressed,overExpressed=overExpressed,underExpressed=underExpressed)
+  }else{
+    nodes <- list(overExpressed=overExpressed,underExpressed=underExpressed)
+  }
+  
+  simulation_name <- paste("COAD_",col_name,sep="")
+  json_array <- list(name=simulation_name,organism="hsa",nodes=nodes)
+ 
+  # print(head(json_array))
+  # print(length((entrezNonExpr)))
+  return(json_array)
 }
 
-# newSimulation(TP_decide, colnames(TP_decide))
-sapply(colnames(TP_decide),newSimulation, TP_decide)
+# a <- sapply(colnames(TP_decide),newSimulation, TP_decide)
 ```
 
+```{r}
+json_submit <- newSimulation(colnames(TP_decide)[1],TP_decide)
+```
+
+```{r}
+r <- POST("https://phensim.tech/api/v1/simulations",body = json_submit, encode="json",add_headers(.headers = c('Content-Type' = "application/json",'Accept'= 'application/json', 'Authorization' = 'Bearer WfA4J3bdwRAZCejlIIOdUGyHxZbtIm3XF6CL3rVi')))
+
+```
+
+```{r}
+json_submit
+```
+
+
+```{r}
+numero_geni <- dim(TP_decide)[1]
+numero_errori <- length(content(r)$errors)
+paste("Geni d.e. e metilati:",numero_geni)
+#r è la response ottenuta da Phensim
+paste("Di questi, Phensim non riconosce l'Entrez ID di",numero_errori,"geni")
+paste("Non ne riconosce il",round(100*numero_errori/numero_geni,2),"%")
+paste("Se dovessimo scartarli rimarrebbero", numero_geni-numero_errori, "geni")
+```
+
+```{r}
+status_code(r)
+```
+```{r}
+l <- list(name="simulation_debug",organism="hsa",nodes=list(overExpressed=row.names(TP_decide)))
+r2 <- POST("https://phensim.tech/api/v1/simulations",body = l, encode="json",add_headers(.headers = c('Content-Type' = "application/json",'Accept'= 'application/json', 'Authorization' = 'Bearer WfA4J3bdwRAZCejlIIOdUGyHxZbtIm3XF6CL3rVi')))
+```
+
+```{r}
+content(r2)
+```
+
+
+```{r}
+write.table(content(r2)$errors, file = "dati/error.txt", sep = "\n")
+```
+
+```{r}
+invalid_pos <- read.table("dati/invalid_nodes.txt", header=FALSE)$V1 + 1
+```
+
+
+```{r}
+head(invalid_pos)
+```
+```{r}
+
+TP_decide2 <- TP_decide[-invalid_pos,]
+```
+
+
+```{r}
+json_submit2 <- newSimulation(colnames(TP_decide2)[2],TP_decide2)
+```
+```{r}
+json_submit2
+```
+
+
+```{r}
+r3 <- POST("https://phensim.tech/api/v1/simulations",body = json_submit2, encode="json",add_headers(.headers = c('Content-Type' = "application/json",'Accept'= 'application/json', 'Authorization' = 'Bearer WfA4J3bdwRAZCejlIIOdUGyHxZbtIm3XF6CL3rVi')))
+
+```
+
+```{r}
+status_code(r3)
+content(r3)
+```
 
 
 ```{r}
