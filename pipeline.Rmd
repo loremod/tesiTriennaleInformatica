@@ -3,10 +3,22 @@ title: "R Notebook"
 output: html_notebook
 ---
 
+
+
+```{r}
+citation("DESeq2")
+```
+
+
+```{r}
+citation("edgeR")
+```
+
+
 ```{r}
 # install.packages('gplots')
 # install.packages("factoextra")
-install.packages('xtable')
+# install.packages('xtable')
 ```
 ```{r}
 library(xtable)
@@ -27,7 +39,7 @@ PHENSIM_REQ_HEADERS = c('Accept'= 'application/json', 'Authorization' = 'Bearer 
 ```{r}
 methylated <- read.table("dati/coad_methylated_genes.txt", header=FALSE)
 methylated <- methylated$V1
-head(methylated)
+length(methylated)
 ```
 
 
@@ -45,16 +57,29 @@ clinical <- read.table("dati/coad_clinical.txt", header=TRUE, sep = "\t", row.na
 ```
 
 ```{r}
+head(clinical)
+```
+
+
+```{r}
+clinical$tissue_or_organ_of_origin
+```
+
+
+```{r}
 dim(clinical)
 ```
 
-
 ```{r}
-to_latex <- head(expression[1:3])
+colnames(out_table)
 ```
 
 ```{r}
-to_latex <- head(clinical[,c("shortLetterCode","sample_type","tissue_or_organ_of_origin")])
+to_latex <- head(P_df[1:4])
+```
+
+```{r}
+to_latex <- head(ASpathways[,1:4])
 # "morphology","vital_status","age_at_index","days_to_death"
 ```
 
@@ -191,6 +216,44 @@ cpmFilterAfter <-decideTests(fit2,adjust.method = "BH", p.value = 0.05)
 # print("PRIMA DI PRENDERE I METILATI")
 # summary(cpmFilterAfter)
 length(cpmFilterAfter) #dimensione
+sum(abs(cpmFilterAfter[,1]))
+summary(cpmFilterAfter)
+print("ORA PRENDO I METILATI")
+cpmFilterAfter <- keepMethylated(cpmFilterAfter) # li filtro qui, dopo aver applicato limma
+summary(cpmFilterAfter)
+length(cpmFilterAfter) #dimensione
+
+
+#faccio il plot
+plotVolcano(column = 1, title="Tumore vs Controllo\nfiltri:CPM prima, metilati dopo (p-value:0.05)\n", xlim=c(-4e+03,4e+03))
+
+sum(abs(cpmFilterAfter[,1]))
+```
+
+
+```{r}
+head(cpmFilterAfter)
+```
+
+
+
+```{r}
+##Prima li filtro preservando solamente i geni con un cpm>100 in almeno due colonne
+##Poi eseguo limma e, in seguito, prendo da essi soltanto i metilati
+expression <- read.table("dati/coad_expression_fixed.txt", header=TRUE, sep = "\t", row.names=1)
+
+#filtro conservando i geni con cpm>100 in almeno 2 colonne
+keep <- rowSums(cpm(expression)>100) >= 2
+expression <- expression[keep,]
+
+fit <- lmFit(expression, design.matrix)
+fit2 <- contrasts.fit(fit, cont.matrix)
+fit2 <- eBayes(fit2)
+
+cpmFilterAfter <-decideTests(fit2,adjust.method = "BH", p.value = 0.05)
+# print("PRIMA DI PRENDERE I METILATI")
+# summary(cpmFilterAfter)
+length(cpmFilterAfter) #dimensione
 print("ORA PRENDO I METILATI")
 cpmFilterAfter <- keepMethylated(cpmFilterAfter) # li filtro qui, dopo aver applicato limma
 summary(cpmFilterAfter)
@@ -275,7 +338,7 @@ decideExpression <- function(x, epsilon = 0.001){
     return("OVEREXPRESSION")
   else if(x < -epsilon)
     return("UNDEREXPRESSION")
-  else #quindi -epsilon <= x <= epsilon
+  else #quindi se -epsilon <= x <= epsilon
     return("NORMAL")
 }
 ```
@@ -283,6 +346,11 @@ decideExpression <- function(x, epsilon = 0.001){
 
 ```{r}
 TP_decide <- data.frame(apply(TP_LFC, c(1, 2), FUN = decideExpression))
+```
+
+
+```{r}
+head(TP_decide)
 ```
 
 
@@ -386,7 +454,6 @@ updateManager <- function(manager){
 
 sendSimulation <- function(params, ds){
   r <- POST("https://phensim.tech/api/v1/simulations",body = params, encode="json",add_headers(.headers = PHENSIM_REQ_HEADERS))
-  # print(content(r))
   ds <- setInfo(ds, content(r))
   ds
 }
@@ -399,24 +466,11 @@ submitSimulation <- function(sample, simulationManager){
   URL <- paste("https://phensim.tech/api/v1/simulations/",simId,"/submit",sep="")
   resp <- GET(URL, add_headers(.headers = PHENSIM_REQ_HEADERS))
   content(resp)
-  # content(resp)
 }
 
 submitByPos <- function(pos, simulationManager){
   sampleName <- colnames(TP_decide2)[pos]
   submitSimulation(sampleName,simulationManager)
-}
-
-# https://phensim.tech/api/v1/simulations/{SIMULATION_ID}/submit
-submitReadySimulations <- function(manager){
-  for (simName in row.names(manager)) {
-    if(!is.na(manager[simName, "simulationId"])){
-      if(!is.na(manager[simName, "status"]) & manager[simName, "status"] == "Ready"){
-       submitSimulation("TCGA.F4.6703.01A.11R.1839.07", simulationManager)
-        # $data$readable_status
-      }
-    }   
-  }
 }
 
 ```
@@ -489,7 +543,7 @@ simulationManager
 
 ```{r}
 getSimulationParams <- function(col_name, ds){
-  #suddivide i geni per espressione e li mappa con gli EntrezID
+  #suddivide i geni per espressione
   column <- ds[,col_name]
 
   normal_indexes <- which(column == "NORMAL")
@@ -676,6 +730,11 @@ composeGetUrl(202)
 tramite la funzione getOutput effettuiamo una richiesta GET per ottenere il file tsv d'output di una determinata simulazione
 ```{r}
 # library(httr)
+composeGetUrl <- function(simId){
+  url_prefix <- "https://phensim.tech/api/v1/simulations/"
+  url_suffix <- "/download/output"
+  paste(url_prefix, simId, url_suffix, sep="")
+}
 getOutput <- function(simID, fileID, dirname = "."){
   url <- composeGetUrl(simID)
   filename <- paste(fileID,".tsv",sep="")
@@ -699,7 +758,7 @@ for(simName in row.names(simulationManager)){
   name <- simulationManager[simName, "sample"]
   getOutput(simId, name, "output1")
   date_time<-Sys.time()
-  while((as.numeric(Sys.time()) - as.numeric(date_time)) < 11){} 
+  while((as.numeric(Sys.time()) - as.numeric(date_time)) < 5){} 
 }
 ```
 
@@ -714,7 +773,7 @@ path
 ```{r}
 readOutputTable <- function(name){
   filename <- paste(name,"tsv",sep=".")
-  path <- paste("output1", filename,sep="/")
+  path <- paste("output", filename,sep="/")
   out_table <- read.table(path, header=FALSE, sep = "\t", row.names=NULL)
   colnames(out_table) <- header_out
   out_table
@@ -736,6 +795,16 @@ Scarto i nodi che non sono endpoint
 ```{r}
 out_table[which(out_table$`Is Endpoint` == "Yes"),]
 ```
+
+
+```{r}
+out_table[c(52:58,80:82),c("Pathway Id","Node Id","Pathway Name","Is Endpoint")]
+out_table[c(52:58,80:82),c("Pathway Id","Node Id","Activity Score","Average Node Perturbation","P-Value","Pathway Activity Score")]
+```
+```{r}
+out_table[c(52:58,80:82),c("Pathway Id","Node Id","Activity Score","Average Node Perturbation","P-Value","Pathway Activity Score")]
+```
+
 
 ```{r}
 head(simulationManager$sample)
@@ -783,16 +852,19 @@ getEndpointsAS <- function(sample){
   endpoints <- getEndpoints(out_table)
   endpoints[,"Activity Score"]
 }
-getEndpointsPerturbation <- function(sample){
-  out_table <- readOutputTable(sample)
-  endpoints <- getEndpoints(out_table)
-  endpoints[,"Average Node Perturbation"]
-}
+
 getPathwaysAS <- function(sample){
   out_table <- readOutputTable(sample)
   pathways <- getPathways(out_table)
   pathways[,"Pathway Activity Score"]
 }
+
+getEndpointsPerturbation <- function(sample){
+  out_table <- readOutputTable(sample)
+  endpoints <- getEndpoints(out_table)
+  endpoints[,"Average Node Perturbation"]
+}
+
 getPathwaysPerturbation <- function(sample){
   out_table <- readOutputTable(sample)
   pathways <- getPathways(out_table)
@@ -804,7 +876,7 @@ getPathwaysPerturbation <- function(sample){
 ```{r}
 out_table <- readOutputTable(simulationManager$sample[4])
 endpoints <- getEndpoints(out_table)
-head(endpoints)
+head(endpoints[,c("Node Id","Node Name","Is Endpoint","Activity Score","Average Node Perturbation")])
 ```
 
 lapply è una funzione che ritorna una lista come output. Nella sua lista d'output c'è un elemento per ogni elemento della lista passata in input, in questo caso vengono passati in input i nomi dei campioni.
@@ -838,10 +910,10 @@ library(data.table)
 
 
 ```{r}
-#transpose data frame
+
 ASmatrix <- transpose(endpointsAS)
 
-#redefine row and column names
+
 rownames(ASmatrix) <- colnames(endpointsAS)
 colnames(ASmatrix) <- rownames(endpointsAS)
 
@@ -866,12 +938,70 @@ which(is.na(t(normal)))
 ```
 
 
+```{r}
+library(data.table)
+# library(factoextra)
+```
 
-PARTITIONING CLUSTERING
+
+```{r}
+preprocessingForClustering <- function(dataset){
+  dataset <- (na.omit(dataset))
+  ds_T <- transpose(dataset)
+  rownames(ds_T) <- colnames(dataset)
+  colnames(ds_T) <- rownames(dataset)
+  ds_T <- Filter(function(x) sd(x) != 0, ds_T)                
+  data.frame(scale(ds_T))
+}
+```
+
+```{r}
+head(preprocessingForClustering(ASlists))
+```
+
+
+
+
+
+
+
+PARTITIONING CLUSTERING CON ACTIVITY SCORE ENDPOINTS
 
 ```{r}
 library(factoextra) 
 ```
+
+```{r}
+head(normal)
+```
+
+
+```{r}
+#MODIFICATO PER PRESENTAZIONE
+
+k <- kmeans(normal, centers = 3, nstart = 25)
+
+fviz_cluster(k, data = normal, geom="point")
+
+fviz_nbclust(normal, kmeans, method = "wss")
+
+fviz_nbclust(normal, kmeans, method = "silhouette")
+
+str(k)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 ```{r}
@@ -887,6 +1017,100 @@ fviz_nbclust(normal, kmeans, method = "silhouette")
 
 str(k2)
 ```
+
+```{r}
+table(k2$cluster)
+```
+
+
+```{r}
+clustersMeanSd(k2$cluster,3)
+```
+```{r}
+getMeansList<- function(cluster, num_clusters){
+  means <- list()
+  for(i in 1:num_clusters){
+    members <- names(which(cluster == i))
+    days <- clinic[which(is.na(clinic$days_to_death)==FALSE & row.names(clinic) %in%  members),"days_to_death"]
+    means <- append(means, mean(days))
+    # print(paste("Sd:",sd(days)))
+  }
+  means
+}
+getStdsList<- function(cluster, num_clusters){
+  stds <- list()
+  for(i in 1:num_clusters){
+    members <- names(which(cluster == i))
+    days <- clinic[which(is.na(clinic$days_to_death)==FALSE & row.names(clinic) %in%  members),"days_to_death"]
+    stds <- append(stds, sd(days))
+    # print(paste("Sd:",sd(days)))
+  }
+  stds
+}
+```
+
+```{r}
+getMeansList(k2$cluster,3)
+getStdsList(k2$cluster,3)
+```
+
+```{r}
+getMeansList(k2$cluster,3)
+```
+
+
+```{r}
+
+Mean <- unlist(getMeansList(k2$cluster,3))
+
+df<-data.frame(Mean=Mean,
+			sd=c(0.00362,0.3068,0.322),
+			Quality=as.factor(c("gru","bad","good")),
+			Category=c("A","B","C"),
+			Insert= c(0.0, 0.5, 1.0))
+
+# Load ggplot2
+library(ggplot2)
+
+ggplot(df, aes(x=Category, y=Mean, fill=Quality)) +
+geom_bar(position=position_dodge(), stat="identity",
+		colour='black') +
+geom_errorbar(aes(ymin=Mean-sd, ymax=Mean+sd), width=.2)
+
+```
+
+
+
+
+```{r}
+
+library(ggplot2)
+meanStdPlot <- function(cluster){
+  Mean <- unlist(getMeansList(cluster,3))
+  std <- unlist(getStdsList(cluster,3))
+  nomi <- c("cluster 1","cluster 2","cluster 3")
+  df<-data.frame(Mean=Mean,
+  			sd=std,
+  			clusters = nomi,
+  			Cluster=as.factor(nomi),
+  			Insert= c(0.0, 0.5, 1.0))
+  
+  
+  ggplot(df, aes(x=clusters, y=Mean, fill=Cluster)) +
+  geom_bar(position=position_dodge(), stat="identity",
+  		colour='black') +
+  geom_errorbar(aes(ymin=Mean-sd, ymax=Mean+sd), width=.2)
+}
+
+
+```
+
+
+```{r}
+meanStdPlot(k2$cluster)
+```
+
+
 #days_to_death
 #status vital_status
 (https://www.cancer.gov/about-cancer/diagnosis-staging/staging)
@@ -900,7 +1124,7 @@ clinic <- read.table("dati/coad_clinical_fixed.txt", header=TRUE, sep = "\t", ro
 
 ```{r}
 mean(clinic[which(is.na(clinic$days_to_death)==FALSE),"days_to_death"])
-sd(clinic[which(is.na(clinic$days_to_death)==FALSE),"days_to_death"])
+sd(clinic[which(is.na(clinic$days_to_death)==FALSE),"days_to_death"])             
 ```
 
 ```{r}
@@ -911,7 +1135,6 @@ clustersMeanSd <- function(cluster, num_clusters){
     days <- clinic[which(is.na(clinic$days_to_death)==FALSE & row.names(clinic) %in%  members),"days_to_death"]
     print(paste("Mean:",mean(days)))
     print(paste("Sd:",sd(days)))
-    print(days)
   }
 }
 ```
@@ -925,49 +1148,49 @@ clustersMeanSd(k2$cluster,3)
 
 HIERARCHICAL CLUSTERING CON ACTIVITY SCORE ENDPOINTS
 
-```{r}
-distance <- dist(normal, method = "euclidean")
-fit <- hclust(distance)
-```
 
 
-```{r}
-## Row- and column-wise clustering 
-hr <- fit
-# hc <- hclust(as.dist(1-cor(ASmatrix, method="spearman")), method="complete") 
-## Tree cutting
-groups <- cutree(hr, 6); mycolhc <- rainbow(length(unique(groups)), start=0.1, end=0.9); mycolhc <- mycolhc[as.vector(mycl)] 
-## Plot heatmap 
-mycol <- colorpanel(20, "red", "green") # or try redgreen(75)
-
-heatmap.2(as.matrix(ASmatrix), Rowv=as.dendrogram(hr), col=mycol, scale="row", density.info="none", trace="none", RowSideColors=mycolhc) 
-```
 
 ```{r}
 table(groups)
 ```
 
+```{r}
+hr <- hclust(as.dist(1-cor(t(ASmatrix), method="spearman")), method="complete")
+mycl <- cutree(hr, k=3);
+```
+
+
 
 ```{r}
-## Row- and column-wise clustering 
+
 hr <- hclust(as.dist(1-cor(t(ASmatrix), method="spearman")), method="complete")
 hc <- hclust(as.dist(1-cor(ASmatrix, method="spearman")), method="complete") 
-## Tree cutting
-mycl <- cutree(hr, k=3); mycolhc <- rainbow(length(unique(mycl)), start=0.1, end=0.9); mycolhc <- mycolhc[as.vector(mycl)] 
 
-## Plot heatmap 
-mycol <- colorpanel(40, "darkblue", "yellow", "white")
+mycol <- colorpanel(80, "blue", "white", "red")
 
-
-heatmap.2(as.matrix(ASmatrix), Rowv=as.dendrogram(hr), Colv=as.dendrogram(hc), col=mycol, scale="row", density.info="none", trace="none", RowSideColors=mycolhc) 
+heatmap.2(as.matrix(t(ASmatrix)), Rowv=as.dendrogram(hc), Colv=as.dendrogram(hr), col=mycol, trace="none") 
 ```
+
 ```{r}
-table(mycl)
+as.integer(table(mycl))
 ```
+
 ```{r}
 clustersMeanSd(mycl,3)
 ```
+```{r}
+seeResults <- function(cluster){
+  data.frame(row.names = NULL, Cluster = c(1:3), media = unlist(getMeansList(cluster,3)), deviazione_standard = unlist(getStdsList(cluster,3)), dimensione_cluster = as.integer(table(cluster)))
+}
+latexResults <- function(cluster){
+  xtable(seeResults(cluster), type = "latex")
+}
+```
 
+```{r}
+xtable(seeResults(mycl), type = "latex")
+```
 
 
 
@@ -991,6 +1214,9 @@ heatmap.2(as.matrix(ASmatrix), Rowv=as.dendrogram(hr), Colv=as.dendrogram(hc), c
 ```
 
 
+```{r}
+head(P_df[1:3])
+```
 
 
 
@@ -1049,8 +1275,8 @@ HIERARCHICAL CLUSTERING CON PERTURBATION SU ENDPOINTS
 
 ```{r}
 ## Row- and column-wise clustering 
-hr <- hclust(as.dist(1-cor(t(P_df_t), method="spearman")), method="complete")
-hc <- hclust(as.dist(1-cor(P_df_t, method="spearman")), method="complete") 
+hr <- hclust(as.dist(1-cor(t(P_df_t), method="pearson")), method="complete")
+hc <- hclust(as.dist(1-cor(P_df_t, method="pearson")), method="complete") 
 ## Tree cutting
 mycl <- cutree(hr, k=3); 
 ```
@@ -1060,7 +1286,7 @@ mycl <- cutree(hr, k=3);
 mycolhc <- rainbow(length(unique(mycl)), start=0.1, end=0.9);
 mycolhc <- mycolhc[as.vector(mycl)] 
 ## Plot heatmap 
-mycol <- colorpanel(40, "darkblue", "yellow", "white")
+mycol <- colorpanel(40, "blue", "red", "white")
 heatmap.2(as.matrix(P_df_t), Rowv=as.dendrogram(hr), Colv=as.dendrogram(hc), col=mycol, scale="row", density.info="none", trace="none", RowSideColors=mycolhc) 
 ```
 
@@ -1072,19 +1298,27 @@ clustersMeanSd(mycl, length(table(mycl)))
 ```
 
 ```{r}
-hr <- hclust(as.dist(1-cor(t(P_df_t), method="pearson")), method="complete")
+hr <- hclust(as.dist(1-cor(t(P_df_t), method="spearman")), method="complete")
 mycl <- cutree(hr, k=3); 
 table(mycl)
 clustersMeanSd(mycl, length(table(mycl)))
 ```
+```{r}
+latexResults(mycl)
+```
+
+
 Del primo gruppo nessun paziente è sopravvissuto per più di 2 anni.
 ```{r}
-hr <- hclust(as.dist(1-cor(t(P_df_t), method="pearson")), method="ward.D")
+hr <- hclust(as.dist(1-cor(t(P_df_t), method="spearman")), method="complete")
 mycl <- cutree(hr, k=3); 
 table(mycl)
 clustersMeanSd(mycl, length(table(mycl)))
 ```
 
+```{r}
+meanStdPlot(mycl)
+```
 
 
 
@@ -1124,6 +1358,11 @@ dim(selected_out)
 head(selected_out)
 ```
 
+
+```{r}
+head(getPathways(out_table[,c('Pathway Id','Pathway Name','Pathway Activity Score','Average Pathway Perturbation')]))
+```
+
 ```{r}
 pathwayIDs <- getPathways(out_table)$"Pathway Id"
 ```
@@ -1132,9 +1371,48 @@ pathwayIDs <- getPathways(out_table)$"Pathway Id"
 ASpathways <- data.frame(sapply(simulationManager$sample, FUN = getPathwaysAS),row.names = pathwayIDs)
 ```
 
+```{r}
+pathways <- getPathways(out_table)
+row.names(pathways) <- pathways[,"Pathway Id"]
+head(pathways)
+```
+```{r}
+
+```
+
 
 ```{r}
-head(ASpathways)
+sortedMeans <- function(ds,decreasing = FALSE){
+  means <- apply(ds, 1, FUN=mean)
+  sort(means, decreasing = decreasing)
+}
+```
+
+
+```{r}
+lowestActivityScores <- sortedMeans(PertPathways, decreasing = TRUE)
+names(lowestActivityScores) <- pathways[names(lowestActivityScores),"Pathway Name"]
+```
+
+```{r}
+data.frame(head(lowestActivityScores))
+```
+```{r}
+xtable(data.frame(head(lowestActivityScores)), type = "latex")
+```
+
+
+```{r}
+data.frame(head(lowestActivityScores))
+```
+
+
+```{r}
+data.frame(head(lowestActivityScores))
+```
+
+```{r}
+head(ASpathways[,1:4])
 ```
 
 
@@ -1198,8 +1476,15 @@ heatmap.2(as.matrix(ASpathways), Rowv=as.dendrogram(hc), Colv=as.dendrogram(hr),
 ```
 
 
+```{r}
+meanStdPlot(mycl)
+```
 
 
+
+```{r}
+latexResults(mycl)
+```
 
 
 
@@ -1254,7 +1539,7 @@ clustersMeanSd(kP$cluster,num_clusters)
 ```
 
 
-HIERARCHICAL CLUSTERING CON ACTIVITY SCORE DELLA PATHWAY
+HIERARCHICAL CLUSTERING SU PERTURBATION DELLA PATHWAY
 
 
 ```{r}
@@ -1275,6 +1560,14 @@ heatmap.2(as.matrix(PertPathways), Rowv=as.dendrogram(hc), Colv=as.dendrogram(hr
 
 clustersMeanSd(mycl, length(table(mycl)))
 ```
+
+
+```{r}
+latexResults(mycl)
+```
+
+
+
 ```{r}
 ## Row- and column-wise clustering 
 hr <- hclust(as.dist(1-cor(t(PertPath_t), method="pearson")), method="complete")
