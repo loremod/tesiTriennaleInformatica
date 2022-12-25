@@ -1,0 +1,1098 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(edgeR)
+library(limma)
+library(gplots)
+library(cluster)
+```
+```{r}
+#COSTANTI
+OUTPUT_DIR <- "r1_output"
+```
+
+
+```{r}
+tumorPurity <- read.table("dati/ext/estimate_scores.tsv", header=TRUE, sep = "\t", row.names=5)
+purity <- tumorPurity[which(rownames(tumorPurity) %in% rownames(clinical)),-(1:3)]
+```
+
+
+```{r}
+dim(purity)
+```
+
+```{r}
+head(purity)
+```
+
+
+```{r}
+length(rownames(clinical))
+```
+
+---Ridure il numero campioni a quelli presenti in estimatedScores---
+
+Riduco nel dataframe clinical
+```{r}
+clinical[which(rownames(clinical) %in% rownames(purity)),]
+```
+
+Riduco nel dataframe expression
+
+```{r}
+head(colnames(expression))
+```
+```{r}
+head(rownames(purity))
+```
+
+```{r}
+head(rownames(purity))
+```
+
+
+```{r}
+head(rownames(clinical))
+```
+
+```{r}
+dim(expression[,(colnames(expression) %in% rownames(purity))])
+```
+
+
+
+```{r}
+head(clinical)
+```
+
+```{r}
+clinical$tumorPurity <- 0
+```
+
+
+```{r}
+getTumorPurity <- function(observation){
+  purity[observation,"TumorPurity"]
+}
+```
+
+
+```{r}
+clinical$tumorPurity <- sapply(rownames(clinical), getTumorPurity)
+```
+
+```{r}
+meta <- na.omit(clinical[,c("tumorPurity","shortLetterCode")])
+```
+
+
+```{r}
+head(meta)
+```
+
+----------------------------
+
+
+```{r}
+groups <- factor(meta$shortLetterCode)
+levels(groups)
+table(groups)
+```
+
+```{r}
+design.matrix <- model.matrix(~ 0+groups+tumorPurity, data=meta)
+colnames(design.matrix) <- c(levels(groups),"tumorPurity")
+d2 <- design.matrix
+head(design.matrix)
+```
+
+```{r}
+dim(design.matrix)
+```
+
+```{r}
+cont.matrix <- makeContrasts(CasevsControl = TP-NT,
+            levels=design.matrix)
+
+cont.matrix
+```
+
+```{r}
+colnames(expression) <- gsub("[.]","-",colnames(expression))
+```
+
+
+```{r}
+dim(expression)
+```
+
+```{r}
+methylated <- read.table("dati/coad_methylated_genes.txt", header=FALSE)
+methylated <- methylated$V1
+keepMethylated <- function(dataset){
+  indexes <- which(row.names(dataset) %in% methylated)
+  new_dataset <- dataset[indexes,]
+  return(new_dataset)
+}
+```
+
+```{r}
+##Prima li filtro preservando solamente i geni con un cpm>100 in almeno due colonne
+##Poi eseguo limma e, in seguito, prendo da essi soltanto i metilati
+expression <- read.table("dati/coad_expression_fixed.txt", header=TRUE, sep = "\t", row.names=1)
+
+#converto gli id di expression nello stesso formato usato nei metadati e elimino i campioni per cui non si conosce la tumorPurity
+colnames(expression) <- gsub("[.]","-",colnames(expression))
+expression <- expression[,rownames(meta)]
+colnames(expression) <- gsub("-",".",colnames(expression))
+
+#filtro conservando i geni con cpm>100 in almeno 2 colonne
+keep <- rowSums(cpm(expression)>100) >= 2
+expression <- expression[keep,]
+
+fit <- lmFit(expression, design.matrix)
+fit2 <- contrasts.fit(fit, cont.matrix)
+fit2 <- eBayes(fit2)
+
+cpmFilterAfter <-decideTests(fit2,adjust.method = "BH", p.value = 0.05)
+# print("PRIMA DI PRENDERE I METILATI")
+# summary(cpmFilterAfter)
+length(cpmFilterAfter) #dimensione
+sum(abs(cpmFilterAfter[,1]))
+summary(cpmFilterAfter)
+print("ORA PRENDO I METILATI")
+cpmFilterAfter <- keepMethylated(cpmFilterAfter) # li filtro qui, dopo aver applicato limma
+summary(cpmFilterAfter)
+length(cpmFilterAfter) #dimensione
+
+
+#faccio il plot
+plotVolcano(column = 1, title="DGE considerando la covariata TumorPurity (p-value:0.05)\n", xlim=c(-4e+03,4e+03))
+
+sum(abs(cpmFilterAfter[,1]))
+```
+
+
+```{r}
+topTable(fit2, number=10)[,c("logFC","AveExpr","t","P.Value")]
+```
+
+
+```{r}
+#Methylated Differently Expressed Genes
+expression <- read.table("dati/coad_expression_fixed.txt", header=TRUE, sep = "\t", row.names=1)
+MDEG <- row.names(cpmFilterAfter[which(cpmFilterAfter[,1] != 0),])
+MDEG_entrez <- data.frame(row.names=MDEG,entrez=entrezMap[MDEG,])
+expressionMDEG <- expression[which(row.names(expression) %in% MDEG),]
+```
+
+```{r}
+NT_indexes <- which(clinical$shortLetterCode == "NT")
+NT_expr <- expressionMDEG[,NT_indexes]
+TP_expr <- expressionMDEG[,-NT_indexes]
+```
+
+```{r}
+head(NT_expr)
+head(TP_expr)
+```
+
+
+
+```{r}
+#calcolo la media, per ogni gene, delle espressioni del gruppo di controllo
+NT_mean <- apply(NT_expr, 1, FUN = mean)
+#dalla media calcolo il logartimo in base 2 della media
+NT_log2Mean <- log2(NT_mean)
+#calcolo il logaritmo delle espressioni dei campioni tumorali
+TP_log2 <- log2(TP_expr)
+#ottengo il LogFoldChange per ogni gene-campione tumorale
+TP_LFC <- TP_log2 - NT_log2Mean
+```
+
+```{r}
+head(TP_log2)
+head(NT_log2Mean)
+head(TP_LFC)
+```
+
+```{r}
+decideExpression <- function(x, epsilon = 0.001){
+  if(x>epsilon)
+    return("OVEREXPRESSION")
+  else if(x < -epsilon)
+    return("UNDEREXPRESSION")
+  else #quindi se -epsilon <= x <= epsilon
+    return("NORMAL")
+}
+```
+
+```{r}
+TP_decide <- data.frame(apply(TP_LFC, c(1, 2), FUN = decideExpression))
+```
+
+```{r}
+head(TP_decide)
+head(TP_LFC)
+```
+
+```{r}
+head(which(TP_decide[,1] == "NORMAL"))
+```
+
+```{r}
+entrezTable <- read.table("dati/coad_expression_with_ids_fixed.txt", header=TRUE, sep = "\t", row.names=1)
+```
+
+
+```{r}
+dim(entrezTable)
+```
+
+
+```{r}
+getSYMBOL <- function(x){
+  strsplit(x,split="|",fixed=TRUE)[[1]][1]
+  # v <- strsplit(x,split="|",fixed=TRUE)
+  # return(v[1])
+}
+getID <- function(x){
+  strsplit(x,split="|",fixed=TRUE)[[1]][2]
+  # v <- strsplit(x,split="|",fixed=TRUE)
+  # return(v[1])
+}
+
+splitLength <- function(x){
+  length(strsplit(x,split="|",fixed=TRUE)[[1]])
+}
+```
+
+```{r}
+codes <- row.names(entrezTable)
+head(sapply(codes, getSYMBOL))
+```
+```{r}
+#entrezMap <- data.frame(row.names = sapply(codes, getSYMBOL),EntrezID=sapply(codes, getID))
+entrezMap <- data.frame(row.names = sapply(codes, getID), symbol=sapply(codes, getSYMBOL))
+```
+
+```{r}
+row.names(TP_decide) <- entrezMap[row.names(TP_decide),]
+```
+
+```{r}
+head(TP_decide)
+```
+
+--- VERSO PHENSIM ---
+
+```{r}
+library(httr)
+
+getSimulationName <- function(sample_name){
+  paste("R1_",sample_name,sep="")
+}
+
+getSimulation <- function(sample, simulationManager){
+  simName <- getSimulationName(sample)
+  simId <- simulationManager[simName,"simulationId"]
+  URL <- paste("https://phensim.tech/api/v1/simulations/",simId,sep="")
+  resp <- GET(URL, add_headers(.headers = c('Accept'= 'application/json', 'Authorization' = 'Bearer WfA4J3bdwRAZCejlIIOdUGyHxZbtIm3XF6CL3rVi')))
+  content(resp)
+}
+
+setSimulationId <- function(ds, response){
+  ds[response$data$name,"simulationId"] <- response$data$id
+  ds
+}
+
+updateStatus <- function(ds, response){
+  ds[response$data$name,"status"] <- response$data$readable_status
+  ds
+}
+
+setInfo <- function(ds, response){
+  ds <- setSimulationId(ds, response)
+  ds <- updateStatus(ds, response)
+  ds
+}
+
+updateInfo <- function(sample, manager, resetID=TRUE){
+  r <- getSimulation(sample, simulationManager)
+  
+  if(resetID == TRUE)
+    manager <- setSimulationId(simulationManager,r)
+  manager <- updateStatus(simulationManager,r)
+  manager
+}
+
+updateManager <- function(manager){
+  for (simName in row.names(manager)) {
+    if(!is.na(manager[simName, "simulationId"])){
+      if(is.na(manager[simName, "status"]) | manager[simName, "status"] != "Completed"){
+        manager[simName,"status"] <- updateInfo(manager[simName, "sample"], manager, resetID=FALSE)[simName,"status"]
+      }
+    }   
+  }
+  manager
+}
+
+sendSimulation <- function(params, ds){
+  r <- POST("https://phensim.tech/api/v1/simulations",body = params, encode="json",add_headers(.headers = PHENSIM_REQ_HEADERS))
+  ds <- setInfo(ds, content(r))
+  ds
+}
+
+
+
+submitSimulation <- function(sample, simulationManager){
+  simName <- getSimulationName(sample)
+  simId <- simulationManager[simName,"simulationId"]
+  URL <- paste("https://phensim.tech/api/v1/simulations/",simId,"/submit",sep="")
+  resp <- GET(URL, add_headers(.headers = PHENSIM_REQ_HEADERS))
+  content(resp)
+}
+
+submitByPos <- function(pos, simulationManager){
+  sampleName <- colnames(TP_decide2)[pos]
+  simulationManager[getSimulationName(sampleName), "status"] <- submitSimulation(sampleName,simulationManager)$data$readable_status
+  simulationManager
+}
+
+```
+
+```{r}
+# submitSimulation("TCGA.CM.5862.01A.01R.1653.07", simulationManager)
+simulationManager <- submitByPos(77, simulationManager)
+simulationManager
+```
+```{r}
+for(simId in rownames(simulationManager)){
+  if(simulationManager[simId,'status'] == 'Ready')
+   simulationManager[simId,'status'] <- 'Queued'
+}
+```
+
+
+```{r}
+# simulationNames <- sapply(colnames(TP_decide), FUN = getSimulationName)
+# simulationManager <- data.frame(row.names = simulationNames, sample=colnames(TP_decide), simulationId=NA,status=NA)
+#OR
+simulationManager <- read.table("dati/simulation_managers/r1_simulations.txt", header=TRUE, sep = "\t", row.names=1)
+```
+
+```{r}
+# simulationManager <- setSimulationId(simulationManager,content(r3))
+```
+
+
+```{r}
+simulationManager
+```
+
+
+```{r}
+n <- length(rownames(simulationManager)) - 133
+simulationManager[,"status"] <- "Completed"
+```
+
+
+```{r}
+getSimulation("TCGA.D5.5538.01A.01R.1653.07", simulationManager)
+```
+
+```{r}
+invalid_pos <- read.table("dati/invalid_nodes.txt", header=FALSE)$V1 + 1
+TP_decide2 <- TP_decide[-invalid_pos,]
+```
+
+```{r}
+getSimulationParams <- function(col_name, ds){
+  #suddivide i geni per espressione
+  column <- ds[,col_name]
+
+  normal_indexes <- which(column == "NORMAL")
+  over_indexes <- which(column == "OVEREXPRESSION")
+  under_indexes <- which(column == "UNDEREXPRESSION")
+  
+  nonExpressed <- as.list(row.names(ds)[normal_indexes])
+  overExpressed <- as.list(row.names(ds)[over_indexes])
+  underExpressed <- as.list(row.names(ds)[under_indexes])
+  
+  nodes <- list()
+  if(length(nonExpressed)>0){
+    nodes <- list(nonExpressed=nonExpressed,overExpressed=overExpressed,underExpressed=underExpressed)
+  }else{
+    nodes <- list(overExpressed=overExpressed,underExpressed=underExpressed)
+  }
+  
+  simulation_name <- getSimulationName(col_name)
+  # ritorna la lista contenente i vari parametri
+  list(name=simulation_name,organism="hsa",nodes=nodes)
+}
+
+newSimulation <- function(col_name, ds, simulationManager){
+
+  params <- getSimulationParams(col_name, ds)
+ 
+  simulationManager <- sendSimulation(params, simulationManager)
+
+  simulationManager
+}
+
+# a <- sapply(colnames(TP_decide),newSimulation, TP_decide)
+
+callSim <- function(index){
+  sampleName <- colnames(TP_decide2)[index]
+  rowName <- getSimulationName(sampleName)
+  # print(paste(sampleName,rowName,index))
+  newSimulation(sampleName,TP_decide2, simulationManager)
+}
+```
+
+```{r}
+simulationManager <- callSim(2)
+```
+
+```{r}
+length(row.names(simulationManager))
+```
+
+
+```{r}
+createNextSimulations <- function(simulationManager, to_do){
+  counter = 0
+  left = to_do
+  if(left <= 0) return(simulationManager)
+  for(i in 1 : length(row.names(simulationManager))){
+    simName <- row.names(simulationManager)[i]
+    if(!is.na(simulationManager[simName,"simulationId"])){
+      counter <- counter + 1
+      # print(paste("Skipping ", simName))
+      next
+    }
+    if(counter){
+      print(paste("Skipped ",counter," rows"))
+      counter <- 0
+    }
+    simulationManager[simName,] <- callSim(i)[simName,]
+    print(simName)
+    left <- left - 1
+    if(left <= 0) break
+    date_time<-Sys.time()
+    while((as.numeric(Sys.time()) - as.numeric(date_time)) < 8){} 
+  }
+  simulationManager
+}
+
+
+submitNextSimulations <- function(simulationManager, to_do){
+  counter = 0
+  left = to_do
+  if(left <= 0) return(simulationManager)
+  for(i in 1 : length(row.names(simulationManager))){
+    simName <- row.names(simulationManager)[i]
+    if(simulationManager[simName,"status"] != "Ready"){
+      counter <- counter + 1
+      # print(paste("Skipping ", simName))
+      next
+    }
+    if(counter){
+      print(paste("Skipped ",counter," rows"))
+      counter <- 0
+    }
+    simulationManager[simName,] <- submitByPos(i, simulationManager)[simName,]
+    print(simName)
+    left <- left - 1
+    if(left <= 0) break
+    date_time<-Sys.time()
+    while((as.numeric(Sys.time()) - as.numeric(date_time)) < 8){} 
+  }
+  simulationManager
+}
+
+checkHowManyToCreate <- function(simMngr){
+  counter <- 0
+  len <- length(row.names(simMngr))
+  for(i in 1 : len){
+    simName <- row.names(simMngr)[i]
+    if(!is.na(simMngr[simName,"simulationId"])){
+      counter <- counter + 1
+    }else break
+  }
+  print(paste("Simulations left: ", len-counter))
+  return(len-counter)
+}
+
+# checkHowManyToSubmit <- function(simMngr){
+#   counter <- 0
+#   len <- checkHowManyToCreate(simMngr)
+#   for(i in 1 : len){
+#     simName <- row.names(simMngr)[i]
+#     if(!is.na(simMngr[simName,"simulationId"]))
+#     if(simMngr[simName,"status"] != "Ready"){
+#       counter <- counter + 1
+#     }else break
+#   }
+#   print(paste("Simulations left: ", len-counter))
+#   return(len-counter)
+# }
+
+```
+
+```{r}
+checkHowManyToCreate(simulationManager)
+```
+
+
+```{r}
+simulationManager <- createNextSimulations(simulationManager,50)
+```
+
+```{r}
+simulationManager <- submitNextSimulations(simulationManager,12)
+```
+
+```{r}
+left <- checkHowManyToCreate(simulationManager)
+simulationManager <- createNextSimulations(simulationManager,left)
+simulationManager <- submitNextSimulations(simulationManager,left)
+```
+
+
+
+```{r}
+write.table(simulationManager, file = "dati/simulation_managers/r1_simulations.txt", sep = "\t",col.names = TRUE, quote = FALSE, row.names = TRUE)
+```
+
+```{r}
+library(httr)
+composeGetUrl <- function(simId){
+  url_prefix <- "https://phensim.tech/api/v1/simulations/"
+  url_suffix <- "/download/output"
+  paste(url_prefix, simId, url_suffix, sep="")
+}
+getOutput <- function(simID, fileID, dirname = "."){
+  url <- composeGetUrl(simID)
+  filename <- paste(fileID,".tsv",sep="")
+  path <- paste(dirname, filename,sep="/")
+  r <- GET(url, write_disk(path, overwrite=TRUE),add_headers(.headers = PHENSIM_REQ_HEADERS))
+}
+```
+
+```{r}
+simulationManager
+```
+```{r}
+#Prova della funzionalita di getOutput 
+# simId <- simulationManager$simulationId[1]
+# name <- simulationManager$sample[1]
+# getOutput(simId, name, OUTPUT_DIR)
+```
+
+Scarico tutti i file di output delle simulazioni registrate in simulationManager nella cartella il cui nome è passato come terzo parametro a getOutput
+```{r}
+for(simName in row.names(simulationManager)[1:285]){
+  simId <- simulationManager[simName, "simulationId"]
+  name <- simulationManager[simName, "sample"]
+  getOutput(simId, name, OUTPUT_DIR)
+  date_time<-Sys.time()
+  while((as.numeric(Sys.time()) - as.numeric(date_time)) < 8){} 
+}
+```
+
+
+Leggo il file di output di una delle simulazioni
+```{r}
+readOutputTable <- function(name){
+  filename <- paste(name,"tsv",sep=".")
+  path <- paste(OUTPUT_DIR, filename,sep="/")
+  out_table <- read.table(path, header=FALSE, sep = "\t", row.names=NULL)
+  colnames(out_table) <- header_out
+  out_table
+}
+```
+
+
+```{r}
+getEndpoints <- function(df){
+  #considero solo gli endpoint
+  endpoints <- df[which(df$`Is Endpoint` == "Yes"),]
+  #elimino i duplicati
+  endpoints <- endpoints[!duplicated(endpoints$`Node Id`),]
+  endpoints
+}
+getPathways <- function(df){
+  pathways <- df[!duplicated(df$`Pathway Id`),]
+  pathways
+}
+```
+
+
+```{r}
+getEndpointsAS <- function(sample){
+  out_table <- readOutputTable(sample)
+  endpoints <- getEndpoints(out_table)
+  endpoints[,"Activity Score"]
+}
+
+getPathwaysAS <- function(sample){
+  out_table <- readOutputTable(sample)
+  pathways <- getPathways(out_table)
+  pathways[,"Pathway Activity Score"]
+}
+
+getEndpointsPerturbation <- function(sample){
+  out_table <- readOutputTable(sample)
+  endpoints <- getEndpoints(out_table)
+  endpoints[,"Average Node Perturbation"]
+}
+
+getPathwaysPerturbation <- function(sample){
+  out_table <- readOutputTable(sample)
+  pathways <- getPathways(out_table)
+  pathways[,"Average Pathway Perturbation"]
+}
+```
+
+
+```{r}
+getEndpointsNodeIds <- function(index = 1){
+  out_table <- readOutputTable(simulationManager$sample[index])
+  endpoints <- getEndpoints(out_table)
+  # head(endpoints[,c("Node Id","Node Name","Is Endpoint","Activity Score","Average Node Perturbation")])
+  endpoints$`Node Id`
+}
+
+getPathwaysIds <- function(index = 1){
+  out_table <- readOutputTable(simulationManager$sample[index])
+  pathways <- getPathways(out_table)
+  pathways$`Pathway Id`
+}
+```
+
+Creo la Activity Score matrix di tutti gli endpoints dei vari campioni
+```{r}
+ASlists <- data.frame(sapply(simulationManager$sample, FUN = getEndpointsAS),row.names = getEndpointsNodeIds())
+```
+
+```{r}
+head(ASlists)
+```
+
+
+```{r}
+endpointsAS <- (na.omit(ASlists))
+dim(endpointsAS)
+```
+
+La funzione dist calcola le distanze, in base ad una specifica metrica, tra le righe di un dataframe.
+[https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/dist]
+Dunque genero la trasposta del datafame, in modo da avere un campione per riga, anzichè per colonna.
+Poi filtro gli endpoint con deviazione standard pari a zero.
+```{r}
+library(data.table)
+
+ASmatrix <- transpose(endpointsAS)
+
+
+rownames(ASmatrix) <- colnames(endpointsAS)
+colnames(ASmatrix) <- rownames(endpointsAS)
+
+ASmatrix <- Filter(function(x) sd(x) != 0, ASmatrix)
+
+head(ASmatrix)
+```
+```{r}
+library("gplots")
+library(ggplot2)
+library(factoextra)
+```
+
+
+
+```{r}
+getMeansList<- function(cluster, num_clusters){
+  means <- list()
+  for(i in 1:num_clusters){
+    members <- names(which(cluster == i))
+    days <- clinic[which(is.na(clinic$days_to_death)==FALSE & row.names(clinic) %in%  members),"days_to_death"]
+    means <- append(means, mean(days))
+    # print(paste("Sd:",sd(days)))
+  }
+  means
+}
+getStdsList<- function(cluster, num_clusters){
+  stds <- list()
+  for(i in 1:num_clusters){
+    members <- names(which(cluster == i))
+    days <- clinic[which(is.na(clinic$days_to_death)==FALSE & row.names(clinic) %in%  members),"days_to_death"]
+    stds <- append(stds, sd(days))
+    # print(paste("Sd:",sd(days)))
+  }
+  stds
+}
+meanStdPlot <- function(cluster){
+  Mean <- unlist(getMeansList(cluster,3))
+  std <- unlist(getStdsList(cluster,3))
+  nomi <- c("cluster 1","cluster 2","cluster 3")
+  df<-data.frame(Mean=Mean,
+  			sd=std,
+  			clusters = nomi,
+  			Cluster=as.factor(nomi),
+  			Insert= c(0.0, 0.5, 1.0))
+  
+  
+  ggplot(df, aes(x=clusters, y=Mean, fill=Cluster)) +
+  geom_bar(position=position_dodge(), stat="identity",
+  		colour='black') +
+  geom_errorbar(aes(ymin=Mean-sd, ymax=Mean+sd), width=.2)
+}
+```
+
+
+```{r}
+clinic <- read.table("dati/coad_clinical_fixed.txt", header=TRUE, sep = "\t", row.names=1)
+```
+
+Media e deviazione standard complessiva
+```{r}
+mean(clinic[which(is.na(clinic$days_to_death)==FALSE),"days_to_death"])
+sd(clinic[which(is.na(clinic$days_to_death)==FALSE),"days_to_death"])             
+```
+
+```{r}
+clustersMeanSd <- function(cluster, num_clusters){
+  for(i in 1:num_clusters){
+    print(paste("Gruppo",i))
+    members <- names(which(cluster == i))
+    days <- clinic[which(is.na(clinic$days_to_death)==FALSE & row.names(clinic) %in%  members),"days_to_death"]
+    print(paste("Mean:",mean(days)))
+    print(paste("Sd:",sd(days)))
+    print(paste("N: ",length(days)))
+    print(days)
+  }
+}
+```
+
+
+PARTITIONING CLUSTERING CON ACTIVITY SCORE ENDPOINTS
+
+```{r}
+normal <- data.frame(scale(ASmatrix))
+head(normal)
+```
+
+```{r}
+k2 <- kmeans(normal, centers = 3, nstart = 25)
+
+# aggregate(ASmatrix,by=list(fit$cluster),FUN=mean)
+
+fviz_cluster(k2, data = normal, geom="point")
+
+fviz_nbclust(normal, kmeans, method = "wss")
+
+fviz_nbclust(normal, kmeans, method = "silhouette")
+
+str(k2)
+```
+
+```{r}
+table(k2$cluster)
+```
+
+```{r}
+meanStdPlot(k2$cluster)
+```
+```{r}
+clustersMeanSd(k2$cluster,3)
+```
+HIERARCHICAL CLUSTERING CON ACTIVITY SCORE ENDPOINTS
+
+```{r}
+hr <- hclust(as.dist(1-cor(t(ASmatrix), method="spearman")), method="complete")
+hc <- hclust(as.dist(1-cor(ASmatrix, method="spearman")), method="complete") 
+mycl <- cutree(hr, k=3);
+
+mycol <- colorpanel(80, "blue", "white", "red")
+
+heatmap.2(as.matrix((ASmatrix)), Rowv=as.dendrogram(hr), Colv=as.dendrogram(hc), col=mycol, trace="none") 
+```
+
+```{r}
+clustersMeanSd(mycl,3)
+```
+STESSA COSA MA CON PERTURBATION
+
+```{r}
+P_df <- data.frame(sapply(simulationManager$sample, FUN = getEndpointsPerturbation),row.names = getEndpointsNodeIds())
+```
+
+
+```{r}
+P_df <- (na.omit(P_df))
+
+#transpose data frame
+P_df_t <- transpose(P_df)
+
+#redefine row and column names
+rownames(P_df_t) <- colnames(P_df)
+colnames(P_df_t) <- rownames(P_df)
+
+P_df_t <- Filter(function(x) sd(x) != 0, P_df_t)
+
+
+head(P_df_t)
+
+normP <- data.frame(scale(P_df_t))
+head(normP)
+```
+
+
+```{r}
+num_clusters <- 3
+kP <- kmeans(normP, centers = num_clusters, nstart = 25)
+
+# aggregate(P_df_t,by=list(fit$cluster),FUN=mean)
+
+fviz_cluster(kP, data = normP, geom="point")
+
+# fviz_nbclust(normP, kmeans, method = "wss")
+# 
+# fviz_nbclust(normP, kmeans, method = "silhouette")
+
+str(kP)
+
+clustersMeanSd(kP$cluster,num_clusters)
+```
+
+HIERARCHICAL CLUSTERING CON PERTURBATION SU ENDPOINTS
+```{r}
+## Row- and column-wise clustering 
+hr <- hclust(as.dist(1-cor(t(P_df_t), method="pearson")), method="complete")
+hc <- hclust(as.dist(1-cor(P_df_t, method="pearson")), method="complete") 
+## Tree cutting
+mycl <- cutree(hr, k=3); 
+```
+
+
+```{r}
+mycolhc <- rainbow(length(unique(mycl)), start=0.1, end=0.9);
+mycolhc <- mycolhc[as.vector(mycl)] 
+## Plot heatmap 
+mycol <- colorpanel(40, "blue", "red", "white")
+heatmap.2(as.matrix(P_df_t), Rowv=as.dendrogram(hr), Colv=as.dendrogram(hc), col=mycol, scale="row", density.info="none", trace="none", RowSideColors=mycolhc) 
+```
+
+```{r}
+hr <- hclust(as.dist(1-cor(t(P_df_t), method="spearman")), method="complete")
+mycl <- cutree(hr, k=3); 
+table(mycl)
+clustersMeanSd(mycl, length(table(mycl)))
+```
+
+
+
+Del primo gruppo nessun paziente è sopravvissuto per più di 2 anni.
+```{r}
+hr <- hclust(as.dist(1-cor(t(P_df_t), method="pearson")), method="complete")
+mycl <- cutree(hr, k=3); 
+table(mycl)
+clustersMeanSd(mycl, length(table(mycl)))
+```
+
+```{r}
+meanStdPlot(mycl)
+```
+
+PATHWAYS
+```{r}
+sortedMeans <- function(ds,decreasing = FALSE){
+  means <- apply(ds, 1, FUN=mean)
+  sort(means, decreasing = decreasing)
+}
+```
+
+```{r}
+pathways <- getPathways(out_table)
+row.names(pathways) <- pathways[,"Pathway Id"]
+head(pathways)
+```
+
+
+CLUSTERING SU ACTIVITY SCORE DELLA PATHWAY
+
+```{r}
+ASpathways <- data.frame(sapply(simulationManager$sample, FUN = getPathwaysAS),row.names = getPathwaysIds())
+```
+
+
+```{r}
+ASpathways <- (na.omit(ASpathways))
+
+#transpose data frame
+ASpath_t <- transpose(ASpathways)
+
+#redefine row and column names
+rownames(ASpath_t) <- colnames(ASpathways)
+colnames(ASpath_t) <- rownames(ASpathways)
+
+ASpath_t <- Filter(function(x) sd(x) != 0, ASpath_t)
+
+
+head(ASpath_t)
+
+normPath <- data.frame(scale(ASpath_t))
+head(normPath)
+```
+
+```{r}
+num_clusters <- 3
+kP <- kmeans(normPath, centers = num_clusters, nstart = 25)
+
+# aggregate(P_df_t,by=list(fit$cluster),FUN=mean)
+
+# str(kP)
+
+clustersMeanSd(kP$cluster,num_clusters)
+```
+
+HIERARCHICAL CLUSTERING CON ACTIVITY SCORE DELLA PATHWAY
+
+
+```{r}
+## Row- and column-wise clustering 
+hr <- hclust(as.dist(1-cor(t(ASpath_t), method="spearman")), method="complete")
+hc <- hclust(as.dist(1-cor(ASpath_t, method="spearman")), method="complete")
+## Tree cutting
+mycl <- cutree(hr, k=3)
+table(mycl)
+clustersMeanSd(mycl, length(table(mycl)))
+
+mycolhc <- rainbow(length(unique(mycl)), start=0.1, end=0.9); mycolhc <- mycolhc[as.vector(mycl)] 
+
+## Plot heatmap 
+mycol <- colorpanel(70, "blue", "white", "red")
+
+
+heatmap.2(as.matrix(ASpathways), Rowv=as.dendrogram(hc), Colv=as.dendrogram(hr), col=mycol, scale="row", density.info="none", trace="none") 
+```
+```{r}
+meanStdPlot(mycl)
+```
+
+CLUSTERING SU PERTURBATION DELLE PATHWAY
+
+
+```{r}
+PertPathways <- data.frame(sapply(simulationManager$sample, FUN = getPathwaysPerturbation),row.names = getPathwaysIds())
+```
+
+
+```{r}
+head(PertPathways)
+```
+
+
+```{r}
+PertPathways <- (na.omit(PertPathways))
+
+#transpose data frame
+PertPath_t <- transpose(PertPathways)
+
+#redefine row and column names
+rownames(PertPath_t) <- colnames(PertPathways)
+colnames(PertPath_t) <- rownames(PertPathways)
+
+PertPath_t <- Filter(function(x) sd(x) != 0, PertPath_t)
+
+
+head(PertPath_t)
+
+normPath2 <- data.frame(scale(PertPath_t))
+head(normPath2)
+```
+
+
+```{r}
+num_clusters <- 3
+kP <- kmeans(normPath2, centers = num_clusters, nstart = 25)
+
+# aggregate(P_df_t,by=list(fit$cluster),FUN=mean)
+
+fviz_cluster(kP, data = normPath2, geom="point")
+# 
+# fviz_nbclust(normPath2, kmeans, method = "wss")
+# 
+# fviz_nbclust(normPath2, kmeans, method = "silhouette")
+
+# str(kP)
+
+clustersMeanSd(kP$cluster,num_clusters)
+```
+
+
+HIERARCHICAL CLUSTERING SU PERTURBATION DELLA PATHWAY
+
+
+```{r}
+## Row- and column-wise clustering 
+hr <- hclust(as.dist(1-cor(t(PertPath_t), method="pearson")), method="average")
+hc <- hclust(as.dist(1-cor(PertPath_t, method="spearman")), method="complete")
+## Tree cutting
+mycl <- cutree(hr, k=3)
+table(mycl)
+
+mycolhc <- rainbow(length(unique(mycl)), start=0.1, end=0.9); mycolhc <- mycolhc[as.vector(mycl)] 
+
+## Plot heatmap 
+mycol <- colorpanel(50, "blue", "white", "red")
+
+
+heatmap.2(as.matrix(PertPathways), Rowv=as.dendrogram(hc), Colv=as.dendrogram(hr), col=mycol, scale="row", density.info="none", trace="none") 
+
+clustersMeanSd(mycl, length(table(mycl)))
+```
+
+
+
+```{r}
+## Row- and column-wise clustering 
+hr <- hclust(as.dist(1-cor(t(PertPath_t), method="pearson")), method="complete")
+hc <- hclust(as.dist(1-cor(PertPath_t, method="spearman")), method="complete")
+## Tree cutting
+mycl <- cutree(hr, k=3)
+table(mycl)
+
+mycolhc <- rainbow(length(unique(mycl)), start=0.1, end=0.9); mycolhc <- mycolhc[as.vector(mycl)] 
+
+## Plot heatmap 
+mycol <- colorpanel(50, "blue", "white", "red")
+
+
+heatmap.2(as.matrix(PertPathways), Rowv=as.dendrogram(hc), Colv=as.dendrogram(hr), col=mycol, scale="row", density.info="none", trace="none") 
+
+clustersMeanSd(mycl, length(table(mycl)))
+```
+
+
+
+
+
+```{r}
+lowestActivityScores <- sortedMeans(PertPathways, decreasing = FALSE)
+names(lowestActivityScores) <- pathways[names(lowestActivityScores),"Pathway Name"]
+highestActivityScores <- sortedMeans(PertPathways, decreasing = TRUE)
+names(highestActivityScores) <- pathways[names(highestActivityScores),"Pathway Name"]
+```
+
+```{r}
+data.frame(head(lowestActivityScores))
+data.frame(head(highestActivityScores))
+```
+
+
