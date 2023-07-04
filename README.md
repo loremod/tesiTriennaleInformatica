@@ -70,7 +70,7 @@ I tre gruppi trovati, come si può notare nell'immagine sotto, risultano essere 
   <img width="80%" src="./images/clustering.png"/>
 </p>
 
-# Conclusione
+# 👁‍🗨 Conclusione
 Dalle analisi effettuate e dai risultati ottenuti si evince che la metilazione, influendo sull’espressione dei geni, porta a sostanziali alterazioni delle pathway.
 Tramite queste alterazioni è possibile trovare gruppi di pazienti che,
 dal momento della diagnosi, riescono a sopravvivere, mediamente,
