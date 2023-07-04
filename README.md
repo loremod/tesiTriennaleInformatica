@@ -62,12 +62,12 @@ Ad esempio, dall'applicazione del clustering gerarchico sull’Activity Score de
 I risultati evidenziano delle differenze tra i
 gruppi, in particolar modo tra il secondo e il terzo cluster, le cui sopravvivenze medie sono rispettivamente di 910.29 e 46.67 giorni. 
 <p align="center">
-  <img width="60%" src="./images/boxplots.png"/>
+  <img width="80%" src="./images/boxplots.png"/>
 </p>
 
 I tre gruppi trovati, come si può notare nell'immagine sotto, risultano essere separati in maniera abbastanza netta nella rappresentazione bidimensione ottenuta dall'applicazione della Principal Component Analysis sul dataset dei valori di activity score.
 <p align="center">
-  <img width="80%" src="./images/clustering.png"/>
+  <img width="85%" src="./images/clustering.png"/>
 </p>
 
 # 👁‍🗨 Conclusione
